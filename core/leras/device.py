@@ -160,7 +160,7 @@ class Devices(object):
             
         if 'CUDA_VISIBLE_DEVICES' in os.environ.keys():
             os.environ.pop('CUDA_VISIBLE_DEVICES')
-        
+        # print("%%%%%%%%%%",os.environ.keys())
         os.environ['TF_DIRECTML_KERNEL_CACHE_SIZE'] = '2500'
         os.environ['CUDA_​CACHE_​MAXSIZE'] = '2147483647'
         os.environ['TF_MIN_GPU_MULTIPROCESSOR_COUNT'] = '2'
@@ -172,7 +172,7 @@ class Devices(object):
         p.join()
         
         visible_devices = q.get()
-
+        # print("%%%%%%%%%%",visible_devices)
         os.environ['NN_DEVICES_INITIALIZED'] = '1'
         os.environ['NN_DEVICES_COUNT'] = str(len(visible_devices))
         
