@@ -6,7 +6,6 @@ from pathlib import Path
 from core.leras import nn
 nn.initialize_main_env()
 import os
-import numpy as np
 import sys
 import time
 import argparse
@@ -22,7 +21,7 @@ from core.leras.device import Devices
 # from mainscripts.Extractor_custome import *
 from mainscripts.Extractor_custome import ExtractSubprocessor,main_extract
 from merger.MergeMasked_custome import MergeMasked,MergeMaskedFace,MergeMaskedFace_assume
-from Retinaface_Mediapipe.pipeline_mobile_resnet import loadmodelface, detection_face
+from Retinaface_Mediapipe.pipeline_mobile_resnet import loadmodelface, detection_face, args
 from Retinaface_Mediapipe.common import random_crop, normalize_channels
 from tqdm import tqdm
 from Load_model_func import *
@@ -34,6 +33,9 @@ from facelib import FaceEnhancer, FaceType, LandmarksProcessor, XSegNet
 import imutils
 import mediapipe as mp
 from skimage import measure
+import time
+sys.path.append(os.path.dirname(__file__))
+PATH = os.path.dirname(__file__)
 # from XSeg_video import init_XSeg
 # import tensorflow as tf
 # gpu_options=tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.9)
@@ -50,7 +52,7 @@ LOGURU_FFMPEG_LOGLEVELS = {
     "critical": "fatal",
 }
 
-with open("/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/config_lipsync.json",'r') as f_lips:
+with open(os.path.join(PATH,"./config_lipsync.json"),'r') as f_lips:
 	list_keypoint = json.load(f_lips)
 streamer = "Dr"
 right_threshold = list_keypoint[streamer]["right_threshold"]
@@ -257,16 +259,85 @@ def is_on_line(x1, y1, x2, y2, x3):
     slope = (y2 - y1) / (x2 - x1)
     return slope * (x3 - x1) + y1
 
+# def ffmpeg_encoder(outfile, fps, width, height):
+#     frames = ffmpeg.input(
+#         "pipe:0",
+#         format="rawvideo",
+#         pix_fmt="rgb24",
+#         vsync="1",
+#         s='{}x{}'.format(width, height),
+#         r=fps,
+#     )
+#
+#     encoder_ = subprocess.Popen(
+#         ffmpeg.compile(
+#             ffmpeg.output(
+#                 frames,
+#                 outfile,
+#                 pix_fmt="yuv420p",
+#                 vcodec="libx264",
+#                 acodec="copy",
+#                 r=fps,
+#                 crf=17,
+#                 vsync="1",
+#             )
+#             .global_args("-hide_banner")
+#             .global_args("-nostats")
+#             .global_args(
+#                 "-loglevel",
+#                 LOGURU_FFMPEG_LOGLEVELS.get(
+#                     os.environ.get("LOGURU_LEVEL", "INFO").lower()
+#                 ),
+#             ),
+#             overwrite_output=True,
+#         ),
+#         stdin=subprocess.PIPE,
+#         # stdout=subprocess.DEVNULL,
+#         # stderr=subprocess.DEVNULL,
+#     )
+#     return encoder_
+
 def ffmpeg_encoder(outfile, fps, width, height):
-    frames = ffmpeg.input(
+    LOGURU_FFMPEG_LOGLEVELS = {
+        "trace": "trace",
+        "debug": "debug",
+        "info": "info",
+        "success": "info",
+        "warning": "warning",
+        "error": "error",
+        "critical": "fatal",
+        }
+
+
+    if torch.cuda.is_available():
+        codec = "h264_nvenc"
+        frames = ffmpeg.input(
         "pipe:0",
         format="rawvideo",
         pix_fmt="rgb24",
-        vsync="1",
+        # vsync="2",
         s='{}x{}'.format(width, height),
         r=fps,
+        # hwaccel="cuda",
+        # hwaccel_device="0",
+        # hwaccel_output_format="cuda",
+        thread_queue_size=2,
     )
-
+    else:
+        codec = "libx264"
+        frames = ffmpeg.input(
+        "pipe:0",
+        format="rawvideo",
+        pix_fmt="rgb24",
+        # vsync="2",
+        s='{}x{}'.format(width, height),
+        r=fps,
+        # hwaccel="cuda",
+        # hwaccel_device="0",
+        # hwaccel_output_format="cuda",
+        thread_queue_size=2,
+    )
+    # print("###########33", codec)
     encoder_ = subprocess.Popen(
         ffmpeg.compile(
             ffmpeg.output(
@@ -274,10 +345,12 @@ def ffmpeg_encoder(outfile, fps, width, height):
                 outfile,
                 pix_fmt="yuv420p",
                 vcodec="libx264",
+                # vcodec=codec,
                 acodec="copy",
                 r=fps,
-                crf=17,
-                vsync="1",
+                # crf=1,
+                # vsync="2",
+                # async=4,
             )
             .global_args("-hide_banner")
             .global_args("-nostats")
@@ -294,6 +367,7 @@ def ffmpeg_encoder(outfile, fps, width, height):
         # stderr=subprocess.DEVNULL,
     )
     return encoder_
+
 
 
 def retinaface_check(blocks):
@@ -393,13 +467,13 @@ def extract_face_retina(image,face_mesh_wide,kf_mouth,kf):
             realy = y * bbox_h + bbox[1]
             listpoint.append([realx, realy])
 
-        # if kf is not None:
-        #     if kf.noneArray():
-        #         # kf.setpoints(listpointLocal, 1e-03)
-        #         kf.setpoints(listpoint, w, h)
-        #
-        #     else:
-        #         listpoint = kf.getpoints(listpoint)
+        if kf is not None:
+            if kf.noneArray():
+                # kf.setpoints(listpointLocal, 1e-03)
+                kf.setpoints(listpoint, w, h)
+
+            else:
+                listpoint = kf.getpoints(listpoint)
 
         srcpts = np.array(listpoint, np.int32)
         data['image_landmarks'] = srcpts
@@ -621,69 +695,76 @@ def mask2box(mask2d):
     return topy, topx, bottomy, bottomx, center_
 
 def write_frame(images,encoder_video):
+    global total_record
+    total_record +=1
     images = cv2.cvtColor(images,cv2.COLOR_RGB2BGR)
     imageout = Image.fromarray(np.uint8(images))
     encoder_video.stdin.write(imageout.tobytes())
 
 
-def draw_text(img, text,
-          font=cv2.FONT_HERSHEY_PLAIN,
-          pos=(0, 0),
-          font_scale=3,
-          font_thickness=2,
-          text_color=(0, 255, 0),
-          text_color_bg=(0, 0, 0)
-          ):
-
-    x, y = pos
-    text_size, _ = cv2.getTextSize(text, font, font_scale, font_thickness)
-    text_w, text_h = text_size
-    cv2.rectangle(img, pos, (x + text_w, y + text_h), text_color_bg, -1)
-    cv2.putText(img, text, (x, y + text_h + font_scale - 1), font, font_scale, text_color, font_thickness)
-
-
-def highlight_mask_area(img, mask, color=(0, 255, 0), alpha=0.7):
-    """
-    """
-    _img = img.copy()
-
-    _img[..., 0][mask>0] = color[0]
-    _img[..., 1][mask>0] = color[1]
-    _img[..., 2][mask>0] = color[2]
-
-    return cv2.addWeighted(img, alpha, _img, 1-alpha, 0)
-
-
 if __name__ == "__main__":
+    # parser = argparse.ArgumentParser(description='Retinaface')
+    # args = parser.parse_args()
+    input_video = args.input_video
+    output_video= args.output_video
+    input_audio = args.input_audio
+    influencer = args.dfl_model
     if sys.version_info[0] < 3 or (sys.version_info[0] == 3 and sys.version_info[1] < 6):
         raise Exception("This program requires at least Python 3.6")
     from config_merger_model import *
-    FACE_PATH = '/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/DrESWav2lipGan_fullmouth_coderformer_18Nov.mp4'
-    # FACE_PATH = '/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/Dr_W2L_18s_24s.mp4'
-    FRAME_PATH = '/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/Dr_video/DrDisrespect-Falls-in-Love-with-Warzone-again-thanks-to-new-Game-Mode-30FPS.mp4'
-    # FRAME_PATH = '/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/Dr_video/Dr_18s_24s.mp4'
     device = 'cuda'
-    output_path = '/home/ubuntu/quyennv/DeepFaceLab_Linux/DeepFaceLab/test_video/DFLab_m382v2_Wav2lipgan_codeformer_visual.mp4'
-    model_path = '/home/ubuntu/quyennv/DeepFaceLab_Linux/workspace/model'
-
+    savepath_nonsound = "./output_nonsound_1.mp4"
+    # model_path = '/home/ubuntu/quyennv/DeepFaceLab_Linux/workspace/model/Kaja-model'
     mobile_net, resnet_net = loadmodelface()    #Face Occlusion
-    xseg_256_extract_func = init_XSeg(model_path, device='cuda')
+    xseg_256_extract_func = init_XSeg(f"/home/ubuntu/Documents/DeepFaceLab_Linux/model/{influencer}-model/", device='cuda')
+    model = models.import_model(model_class_name)(is_training=False,
+                                                  saved_models_path=Path(f"/home/ubuntu/Documents/DeepFaceLab_Linux/model/{influencer}-model/"),
+                                                  force_gpu_idxs=force_gpu_idxs,
+                                                  force_model_name=force_model_name,
+                                                  cpu_only=False)
+    # print("OK")
+    predictor_func, predictor_input_shape, cfg = model.get_MergerConfig()
+    predictor_func = MPFunc(predictor_func)
+    run_on_cpu = False
+    run_on_cpu = len(nn.getCurrentDeviceConfig().devices) == 0
+    face_enhancer_func =FaceEnhancer(place_model_on_cpu=True,run_on_cpu=run_on_cpu)
+    if cpu_only:
+        device_config = nn.DeviceConfig.CPU()
+        place_model_on_cpu = True
+    else:
+        device_config = nn.DeviceConfig.GPUIndexes ([0])
+        # print(device_config.devide)
+    #     place_model_on_cpu = device_config.devices[0].total_mem_gb < 4
+
+    nn.initialize (device_config)
 
     mp_face_mesh = mp.solutions.face_mesh
     face_mesh_wide = mp_face_mesh.FaceMesh(min_detection_confidence=0.2)
 
     trackkpVideoFace = KalmanArray()
     trackkpVideoMount = KalmanArray()
-
+    print(input_video)
+    print(input_audio)
     config_merge_mask = cfg_merge
     config_merge_mask['face_type'] = cfg.face_type
+    FACE_PATH = input_video
+    wavpath = input_audio
+    output_path = output_video
+    # FACE_PATH = '/home/ubuntu/Duy_test_folder/SadTalker_samples/videostoberunfromsadtalker_11/1/video_scale/simon_ref_audio1_gfp_WC.mp4'
+    # FACE_PATH = '/home/ubuntu/quyennv/DeepFaceLab_Linux/DeepFaceLab/test_video/Test_codeformer_18Nov.mp4'
+    # FRAME_PATH = '/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/Dr_video/DrDisrespect-Falls-in-Love-with-Warzone-again-thanks-to-new-Game-Mode.mp4'
+    # wavpath = '/home/ubuntu/Duy_test_folder/SadTalker_samples/AvatarVideo_VoiceSamples/Simon/simonneuteng1_1.mp3'
+    # output_path = '/home/ubuntu/Duy_test_folder/SadTalker_samples/videostoberunfromsadtalker_11/1/video_scale/simon_ref_audio1_gfp_WithDFL.mp4'
+    FRAME_PATH = FACE_PATH#'/home/ubuntu/Duy_test_folder/Retinaface_Mediapipe/Dr_video/Doc_lipsync_Apr6/video/Doc_clip508.mp4'
 
     capFrame = cv2.VideoCapture(FRAME_PATH)
     capFace = cv2.VideoCapture(FACE_PATH)
     fps = capFrame.get(cv2.CAP_PROP_FPS)
+    print("FPS: ",fps)
     width_  = int(capFrame.get(cv2.CAP_PROP_FRAME_WIDTH))
     height_ = int(capFrame.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    encoder_video = ffmpeg_encoder(output_path, fps, width_, height_)
+    total_frames = int(capFrame.get(cv2.CAP_PROP_FRAME_COUNT))
+    encoder_video = ffmpeg_encoder(savepath_nonsound, fps, width_, height_)
 
     count_frame = 0
     fps_block = 10
@@ -692,130 +773,141 @@ if __name__ == "__main__":
     block_merge = []
     blur_threshold = 10.69
     border_th = 13
-
-
     minute_start =0
     second_start = 0
-    minute_stop =10
-    second_stop =10
+    minute_stop =1
+    second_stop =35
     frame_start = int(minute_start*60*fps+second_start*fps)
     frame_stop = int(minute_stop*60*fps+second_stop*fps)
-    # frame_start = 1200
-    # frame_stop = 1200 + 6200
     totalF = int(frame_stop-frame_start)
+    # frame_skip = [6060,6720]
+    pbar = tqdm(total=total_frames)
 
-    green = (0, 255, 0)
-    red = (0, 0, 255)
+    total_record = 0
+    try:
+        while capFrame.isOpened():
+            count_frame +=1
+            ret2,frame_ori = capFrame.read()
+            ret,frame = capFace.read()
 
-    pbar = tqdm(total=totalF)
-    while capFrame.isOpened():
-        count_frame +=1
-        ret2,frame_ori = capFrame.read()
-        ret,frame = capFace.read()
-        frame_cop = frame.copy()
-
-        if not ret or not ret2:
-            break
-
-        if count_frame <= frame_start:
-            continue
-        elif count_frame > frame_stop:
-            break
-        elif count_frame > frame_start and count_frame <= frame_stop:
-            pbar.update(1)
-            data = extract_face_retina(frame,face_mesh_wide,trackkpVideoMount,trackkpVideoFace)
-            # print(data)
-            if data['image_landmarks'] is None or data['crops_coors'] is None:
-                # print( data['image_landmarks'] is None,  data['crops_coors'] is None)
-                print("Not extract:",count_frame)
-                draw_text(frame_ori, f'fr: {count_frame}', cv2.FONT_HERSHEY_COMPLEX, (100, 40), 1, 2, red)
-                draw_text(frame_ori, f'No Face', cv2.FONT_HERSHEY_COMPLEX, (100, 80), 1, 2, red)
-                write_frame(frame_ori,encoder_video)
+            # if not ret:
+            #     break
+            # frame_cop = frame.copy()
+            # cv2.putText(frame, text='Fr:'+str(count_frame), org=(100, 40), fontFace=cv2.FONT_HERSHEY_TRIPLEX, fontScale=1.1, color=(0, 255, 0),thickness=2)
+            # cv2.putText(frame_ori, text='Fr: '+str(count_frame), org=(100, 40), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
+            if count_frame <= frame_start:
                 continue
-            crops_coors = data['crops_coors']
-            t, b, l, r = crops_coors
-            cv2.rectangle(frame, (l, t), (r, b), (0, 255, 0), 2)
-            cv2.rectangle(frame_ori, (l, t), (r, b), (0, 255, 0), 2)
-            data['face_type'] = config_merge_mask['face_type']
+            elif count_frame > frame_stop:
+                break
+            elif count_frame > frame_start and count_frame <= frame_stop:
+                # ret,frame = capFace.read()
+                # frame_cop = frame.copy()
+                # cv2.putText(frame, text='Fr:'+str(count_frame), org=(100, 40), fontFace=cv2.FONT_HERSHEY_TRIPLEX, fontScale=1.1, color=(0, 255, 0),thickness=2)
 
-            #check size of cutted face
-            size_box_face = np.abs((crops_coors[0]-crops_coors[1])*(crops_coors[2]-crops_coors[3]))
-            # cv2.putText(videoimg, text='Size_box'+str(size_box_face/(width_*height_)), org=(100, 150), fontFace=cv2.FONT_HERSHEY_TRIPLEX, fontScale=1.1, color=(0, 255, 0),thickness=2)
-            if size_box_face/(width_*height_) <= 0.01:
-                print("Small face box",count_frame,size_box_face/(width_*height_))
-                draw_text(frame_ori, f'fr: {count_frame}', cv2.FONT_HERSHEY_COMPLEX, (100, 40), 1, 2, red)
-                draw_text(frame_ori, f'Face is too small', cv2.FONT_HERSHEY_COMPLEX, (100, 80), 1, 2, red)
-                write_frame(frame_ori,encoder_video)
-                continue
+                # if count_frame >=frame_skip[0] and count_frame <= frame_skip[1]:
+                #     frame = frame_ori
 
-            #check blur face
-            face = frame_ori[crops_coors[0]:crops_coors[1],crops_coors[2]:crops_coors[3],:]
-            face = imutils.resize(face, width=500)
-            focus_measure = cv2.Laplacian(face, cv2.CV_64F).var()
-            if focus_measure < blur_threshold:      ## Blur face condition ##
-                print("Blur face",count_frame,"|",focus_measure)
-                draw_text(frame_ori, f'fr: {count_frame}', cv2.FONT_HERSHEY_COMPLEX, (100, 40), 1, 2, red)
-                draw_text(frame_ori, f'Blur Face', cv2.FONT_HERSHEY_COMPLEX, (100, 80), 1, 2, red)
-                write_frame(frame_ori,encoder_video)
-                continue
+                if len(block) < fps_block and ret:
+                    block.append(frame)
+                    block_ori.append(frame_ori)
+
+                if len(block) == fps_block or not ret:
+                    # detected_frame = retinaface_check(block)
+
+                    ##Process images in block
+                    for idx in range(fps_block):
+                        pbar.update(1)
+                        # print("Total frame recoreded" ,total_record ," - ", idx)
+                        data = extract_face_retina(block[idx],face_mesh_wide,trackkpVideoMount,trackkpVideoFace)
+                        # print(data)
+                        if data['image_landmarks'] is None or data['crops_coors'] is None:
+                            # print( data['image_landmarks'] is None,  data['crops_coors'] is None)
+                            print("Not extract:",count_frame)
+                            write_frame(block_ori[idx],encoder_video)
+                            continue
+                        crops_coors = data['crops_coors']
+                        data['face_type'] = config_merge_mask['face_type']
+
+                        #check size of cutted face
+                        size_box_face = np.abs((crops_coors[0]-crops_coors[1])*(crops_coors[2]-crops_coors[3]))
+                        # cv2.putText(videoimg, text='Size_box'+str(size_box_face/(width_*height_)), org=(100, 150), fontFace=cv2.FONT_HERSHEY_TRIPLEX, fontScale=1.1, color=(0, 255, 0),thickness=2)
+                        if size_box_face/(width_*height_) <= 0.01:
+                            print("Small face box",count_frame,size_box_face/(width_*height_))
+                            write_frame(block_ori[idx],encoder_video)
+                            continue
+
+                        # #check blur face
+                        # face = block[idx][crops_coors[0]:crops_coors[1],crops_coors[2]:crops_coors[3],:]
+                        # face = imutils.resize(face, width=500)
+                        # focus_measure = cv2.Laplacian(face, cv2.CV_64F).var()
+                        # if focus_measure < blur_threshold:      ## Blur face condition ##
+                        #     print("Blur face",count_frame,"|",focus_measure)
+                        #     write_frame(block_ori[idx],encoder_video)
+                        #     continue
+
+                        #### Calc and Check Xseg condition
+                        img_mouth_mask = np.zeros((height_,width_), np.uint8)
+                        cv2.fillPoly(img_mouth_mask, pts =[data['mouth_point']], color=(255,255,255))
+
+                        config_merge_mask_cop = config_merge_mask
+                        
+                        if (influencer == "Simon" or influencer == "Kaja"):
+                            config_merge_mask_cop['mask_mode'] = 4
+                        
+                        m_topy, m_topx, m_bottomy, m_bottomx,center_mount = mask2box(img_mouth_mask)
+                        if m_topy <border_th or m_topx <border_th or m_bottomy > height_-border_th or m_bottomx > width_-border_th:
+                            print("Box touched")
+                            config_merge_mask_cop['mask_mode'] = 8
+                            merge_face_img = MergeMasked(predictor_func,
+                                                            predictor_input_shape,
+                                                            face_enhancer_func.enhance,
+                                                            xseg_256_extract_func.extract,
+                                                            config_merge_mask_cop,data,block[idx],block_ori[idx],remerge=True,skip_merge=True)
+                        else:
+                            #     write_frame(block_ori[idx],encoder_video)
+                            #     continue
+
+                            # newval,_,img_face_Xseg = find_ratio_intersection_v2(block_ori[idx],crops_coors,data['mouth_point'],data,mask_mount = img_mouth_mask)
+                            # cv2.putText(block[idx], text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
+                            # cv2.putText(block_ori[idx], text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
+
+                            # if newval < 0.71:
+                            #     print("Ocluded face",count_frame,"|",newval)
+                            #     config_merge_mask_cop['mask_mode'] = 8
+
+                            ### Merge face by "hist-match" to make face trasform smoothy
+                            merge_face_img = MergeMasked(predictor_func,
+                                                            predictor_input_shape,
+                                                            face_enhancer_func.enhance,
+                                                            xseg_256_extract_func.extract,
+                                                            config_merge_mask_cop,data,block[idx],block_ori[idx],remerge=False,skip_merge=False)
+
+                        # # print(merge_face_img)
+                        # if count_frame ==550:
+                        #     cv2.imwrite("Final_merge.png",merge_face_img[...,0:3])
+                        #     print("Saved image")
+                        # block_merge.append(merge_face_img[...,0:3])
+                        out_img1 = merge_face_img[...,0:3]
+                        # img_bgr_uint8_2 = normalize_channels(merge_face_img[...,3], 3)
+                        # img_bgr_2 = img_bgr_uint8_2.astype(np.uint8)
+                        # out_img1 = cv2.addWeighted(out_img1, 0.6,img_bgr_2 , 0.4, 0)
+                        # cv2.polylines(out_img1,[data['mouth_point']], True,color=(0,0,255),thickness=2)
+                        write_frame(out_img1,encoder_video)
 
 
-            #### Calc and Check Xseg condition
-            img_mouth_mask = np.zeros((height_,width_), np.uint8)
-            cv2.fillPoly(img_mouth_mask, pts =[data['mouth_point']], color=(255,0,255))
+                        # break
 
-            draw_text(frame_ori, f'fr: {count_frame}', cv2.FONT_HERSHEY_COMPLEX, (100, 40), 1, 2, green)
-            draw_text(frame, f'fr: {count_frame}', cv2.FONT_HERSHEY_COMPLEX, (100, 40), 1, 2, green)
-
-            config_merge_mask_cop = config_merge_mask
-            m_topy, m_topx, m_bottomy, m_bottomx,center_mount = mask2box(img_mouth_mask)
-            if m_topy <border_th or m_topx <border_th or m_bottomy > height_-border_th or m_bottomx > width_-border_th:
-                print("Box touched the edge")
-                draw_text(frame_ori, f'Box touched the edge', cv2.FONT_HERSHEY_COMPLEX, (100, 80), 1, 2, green)
-                draw_text(frame, f'Box touched the edge', cv2.FONT_HERSHEY_COMPLEX, (100, 80), 1, 2, green)
-                config_merge_mask_cop['mask_mode'] = 8
-            #     write_frame(frame_ori,encoder_video)
-            #     continue
-
-            newval,_,img_face_Xseg = find_ratio_intersection_v2(frame_ori,crops_coors,data['mouth_point'],data,mask_mount = img_mouth_mask)
-            # cv2.putText(frame, text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
-            # cv2.putText(frame_ori, text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
-
-            if newval < 0.71:
-                print("Ocluded face",count_frame,"|",newval)
-                draw_text(frame_ori, f'Ocluded face', cv2.FONT_HERSHEY_COMPLEX, (100, 120), 1, 2, green)
-                draw_text(frame, f'Ocluded face', cv2.FONT_HERSHEY_COMPLEX, (100, 120), 1, 2, green)
-                config_merge_mask_cop['mask_mode'] = 8
-
-            ### Merge face by "hist-match" to make face trasform smoothy
-            merge_face_img = MergeMasked(predictor_func,
-                                            predictor_input_shape,
-                                            face_enhancer_func.enhance,
-                                            xseg_256_extract_func.extract,
-                                            config_merge_mask_cop,data,frame,frame_ori)
-            # # print(merge_face_img)
-            # if count_frame ==550:
-            #     cv2.imwrite("Final_merge.png",merge_face_img[...,0:3])
-            #     print("Saved image")
-            # block_merge.append(merge_face_img[...,0:3])
-            out_img1 = merge_face_img[...,0:3]
-            final_mask_1 = merge_face_img[...,3]
-
-            out_img1 = highlight_mask_area(out_img1, final_mask_1)
-
-            img_mouth_mask = np.zeros((height_,width_), np.uint8)
-            cv2.fillPoly(img_mouth_mask, pts =[data['mouth_point']], color=255)
-            out_img1 = highlight_mask_area(out_img1, img_mouth_mask, color=(0, 0, 255))
-            # print(data['mouth_point'])
-            # cv2.polylines(out_img1, [data['mouth_point']], True,color=(0,0,255),thickness=3)
-            write_frame(out_img1,encoder_video)
-
+                    reset_data()
+                if not ret:
+                    break
             # break
 
-        reset_data()
-
-            # break
-
+    except Exception:
+        pass
     pbar.close()
     encoder_video.stdin.flush()
     encoder_video.stdin.close()
+    time.sleep(2)
+    ffmpeg_cmd = f"""/home/ubuntu/anaconda3/envs/deepfacelab/bin/ffmpeg -y  -hide_banner -loglevel quiet -i {savepath_nonsound} -i '{wavpath}' -c:a aac -c:v copy -crf 17 {output_path}"""
+    print(ffmpeg_cmd)
+    os.system(ffmpeg_cmd)

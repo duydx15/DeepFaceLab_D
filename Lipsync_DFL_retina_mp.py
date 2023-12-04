@@ -708,7 +708,7 @@ if __name__ == "__main__":
     input_video = args.input_video
     output_video= args.output_video
     input_audio = args.input_audio
-
+    influencer = args.dfl_model
     if sys.version_info[0] < 3 or (sys.version_info[0] == 3 and sys.version_info[1] < 6):
         raise Exception("This program requires at least Python 3.6")
     from config_merger_model import *
@@ -716,9 +716,9 @@ if __name__ == "__main__":
     savepath_nonsound = "./output_nonsound_1.mp4"
     # model_path = '/home/ubuntu/quyennv/DeepFaceLab_Linux/workspace/model/Kaja-model'
     mobile_net, resnet_net = loadmodelface()    #Face Occlusion
-    xseg_256_extract_func = init_XSeg(args.dfl_model, device='cuda')
+    xseg_256_extract_func = init_XSeg(f"/home/ubuntu/Documents/DeepFaceLab_Linux/model/{influencer}-model/", device='cuda')
     model = models.import_model(model_class_name)(is_training=False,
-                                                  saved_models_path=Path(args.dfl_model),
+                                                  saved_models_path=Path(f"/home/ubuntu/Documents/DeepFaceLab_Linux/model/{influencer}-model/"),
                                                   force_gpu_idxs=force_gpu_idxs,
                                                   force_model_name=force_model_name,
                                                   cpu_only=False)
@@ -850,6 +850,10 @@ if __name__ == "__main__":
                         cv2.fillPoly(img_mouth_mask, pts =[data['mouth_point']], color=(255,255,255))
 
                         config_merge_mask_cop = config_merge_mask
+                        
+                        if (influencer == "Simon" or influencer == "Kaja"):
+                            config_merge_mask_cop['mask_mode'] = 4
+                        
                         m_topy, m_topx, m_bottomy, m_bottomx,center_mount = mask2box(img_mouth_mask)
                         if m_topy <border_th or m_topx <border_th or m_bottomy > height_-border_th or m_bottomx > width_-border_th:
                             print("Box touched")
@@ -863,7 +867,7 @@ if __name__ == "__main__":
                             #     write_frame(block_ori[idx],encoder_video)
                             #     continue
 
-                            newval,_,img_face_Xseg = find_ratio_intersection_v2(block_ori[idx],crops_coors,data['mouth_point'],data,mask_mount = img_mouth_mask)
+                            # newval,_,img_face_Xseg = find_ratio_intersection_v2(block_ori[idx],crops_coors,data['mouth_point'],data,mask_mount = img_mouth_mask)
                             # cv2.putText(block[idx], text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
                             # cv2.putText(block_ori[idx], text='Intersec ratio: '+str(newval), org=(100, 100), fontFace=cv2.FONT_HERSHEY_TRIPLEX,fontScale=1.1, color=(0, 255, 0),thickness=2)
 
