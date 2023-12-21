@@ -34,6 +34,9 @@ import imutils
 import mediapipe as mp
 from skimage import measure
 import time
+import logging
+from datetime import datetime
+
 sys.path.append(os.path.dirname(__file__))
 PATH = os.path.dirname(__file__)
 # from XSeg_video import init_XSeg
@@ -703,6 +706,8 @@ def write_frame(images,encoder_video):
 
 
 if __name__ == "__main__":
+    date = datetime.today().strftime('%Y-%m-%d')
+    logging.basicConfig(filename=f'/home/ubuntu/Documents/wav2lip_codeformer/logs/wav2lip-{date}.log',filemode = 'a', level=logging.INFO,format='%(asctime)s - DFL - %(levelname)s- %(message)s')
     # parser = argparse.ArgumentParser(description='Retinaface')
     # args = parser.parse_args()
     input_video = args.input_video
@@ -713,7 +718,7 @@ if __name__ == "__main__":
         raise Exception("This program requires at least Python 3.6")
     from config_merger_model import *
     device = 'cuda'
-    savepath_nonsound = "./output_nonsound_1.mp4"
+    savepath_nonsound = os.path.dirname(input_video)+"/output_nonsound_dfl.mp4"
     # model_path = '/home/ubuntu/quyennv/DeepFaceLab_Linux/workspace/model/Kaja-model'
     mobile_net, resnet_net = loadmodelface()    #Face Occlusion
     xseg_256_extract_func = init_XSeg(f"/home/ubuntu/Documents/DeepFaceLab_Linux/model/{influencer}-model/", device='cuda')
@@ -722,7 +727,7 @@ if __name__ == "__main__":
                                                   force_gpu_idxs=force_gpu_idxs,
                                                   force_model_name=force_model_name,
                                                   cpu_only=False)
-    # print("OK")
+    logging.info(f"Load DFL model {influencer} Success")
     predictor_func, predictor_input_shape, cfg = model.get_MergerConfig()
     predictor_func = MPFunc(predictor_func)
     run_on_cpu = False
@@ -765,7 +770,7 @@ if __name__ == "__main__":
     height_ = int(capFrame.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(capFrame.get(cv2.CAP_PROP_FRAME_COUNT))
     encoder_video = ffmpeg_encoder(savepath_nonsound, fps, width_, height_)
-
+    logging.info("Load datas success")
     count_frame = 0
     fps_block = 10
     block = []
@@ -778,8 +783,9 @@ if __name__ == "__main__":
     minute_stop =1
     second_stop =35
     frame_start = int(minute_start*60*fps+second_start*fps)
-    frame_stop = int(minute_stop*60*fps+second_stop*fps)
-    totalF = int(frame_stop-frame_start)
+    frame_stop = total_frames#int(minute_stop*60*fps+second_stop*fps)
+    # totalF = int(frame_stop-frame_start)
+    # print("END: ",frame_stop)
     # frame_skip = [6060,6720]
     pbar = tqdm(total=total_frames)
 
@@ -798,7 +804,9 @@ if __name__ == "__main__":
             if count_frame <= frame_start:
                 continue
             elif count_frame > frame_stop:
+                logging.info("Reach frame stop video")
                 break
+                
             elif count_frame > frame_start and count_frame <= frame_stop:
                 # ret,frame = capFace.read()
                 # frame_cop = frame.copy()
@@ -823,6 +831,7 @@ if __name__ == "__main__":
                         if data['image_landmarks'] is None or data['crops_coors'] is None:
                             # print( data['image_landmarks'] is None,  data['crops_coors'] is None)
                             print("Not extract:",count_frame)
+                            logging.warning(f"Not extract: {count_frame}")
                             write_frame(block_ori[idx],encoder_video)
                             continue
                         crops_coors = data['crops_coors']
@@ -833,6 +842,7 @@ if __name__ == "__main__":
                         # cv2.putText(videoimg, text='Size_box'+str(size_box_face/(width_*height_)), org=(100, 150), fontFace=cv2.FONT_HERSHEY_TRIPLEX, fontScale=1.1, color=(0, 255, 0),thickness=2)
                         if size_box_face/(width_*height_) <= 0.01:
                             print("Small face box",count_frame,size_box_face/(width_*height_))
+                            logging.warning(f"Small face box: {count_frame}")
                             write_frame(block_ori[idx],encoder_video)
                             continue
 
@@ -899,11 +909,14 @@ if __name__ == "__main__":
 
                     reset_data()
                 if not ret:
+                    logging.info("Reach end video")
                     break
             # break
 
-    except Exception:
+    except Exception as e:
+        logging.error('Error at %s', exc_info=e)
         pass
+    logging.info("Run DFL  success")
     pbar.close()
     encoder_video.stdin.flush()
     encoder_video.stdin.close()
@@ -911,3 +924,5 @@ if __name__ == "__main__":
     ffmpeg_cmd = f"""/home/ubuntu/anaconda3/envs/deepfacelab/bin/ffmpeg -y  -hide_banner -loglevel quiet -i {savepath_nonsound} -i '{wavpath}' -c:a aac -c:v copy -crf 17 {output_path}"""
     print(ffmpeg_cmd)
     os.system(ffmpeg_cmd)
+    os.remove(savepath_nonsound)
+    logging.info("Merge audio with  DFL output success and remove tmp files")
